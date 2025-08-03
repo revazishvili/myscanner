@@ -1,0 +1,248 @@
+#!/bin/bash
+
+# ეთიკური ქსელის სკანერი
+# გამოიყენეთ მხოლოდ თქვენი ქსელისთვის ან ნებართვით
+
+# ფერები terminal-ისთვის
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# ბანერი
+show_banner() {
+    echo -e "${BLUE}"
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║                        ქსელის სკანერი                           ║"
+    echo "║                    ეთიკური ტესტირებისთვის                       ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+}
+
+# პროგრამების შემოწმება
+check_dependencies() {
+    echo -e "${YELLOW}[+] აუცილებელი პროგრამების შემოწმება...${NC}"
+    
+    DEPS=("nmap" "ping" "netstat" "ss")
+    MISSING=()
+    
+    for dep in "${DEPS[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            MISSING+=("$dep")
+        fi
+    done
+    
+    if [ ${#MISSING[@]} -ne 0 ]; then
+        echo -e "${RED}[!] გამოტოვებული პროგრამები: ${MISSING[*]}${NC}"
+        echo -e "${YELLOW}[+] დააინსტალირეთ: sudo apt-get install nmap net-tools${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}[✓] ყველა აუცილებელი პროგრამა მოიძებნა${NC}"
+}
+
+# ქსელის სკანირება
+network_scan() {
+    echo -e "\n${BLUE}=== ქსელის სკანირება ===${NC}"
+    
+    # მიმდინარე ქსელის რანგის გამოვლენა
+    LOCAL_IP=$(ip route get 8.8.8.8 | awk -F"src " 'NR==1{split($2,a," ");print a[1]}')
+    NETWORK=$(ip route | grep "$LOCAL_IP" | grep -E "192\.168\.|10\.|172\." | awk '{print $1}' | head -1)
+    
+    if [ -z "$NETWORK" ]; then
+        echo -e "${RED}[!] ქსელის რანგი ვერ მოიძებნა${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}[+] მიმდინარე IP: $LOCAL_IP${NC}"
+    echo -e "${GREEN}[+] ქსელის რანგი: $NETWORK${NC}"
+    
+    echo -e "${YELLOW}[+] აქტიური ჰოსტების ძებნა...${NC}"
+    
+    # nmap-ით ping scan
+    nmap -sn "$NETWORK" | grep -E "Nmap scan report|MAC Address" | while read line; do
+        if [[ $line == *"Nmap scan report"* ]]; then
+            HOST=$(echo "$line" | awk '{print $5}')
+            echo -e "${GREEN}[✓] აქტიური ჰოსტი: $HOST${NC}"
+        elif [[ $line == *"MAC Address"* ]]; then
+            MAC=$(echo "$line" | awk '{print $3}')
+            VENDOR=$(echo "$line" | sed 's/.*(\(.*\)).*/\1/')
+            echo -e "${BLUE}    MAC: $MAC ($VENDOR)${NC}"
+        fi
+    done
+}
+
+# პორტების სკანირება
+port_scan() {
+    echo -e "\n${BLUE}=== პორტების სკანირება ===${NC}"
+    
+    read -p "შეიყვანეთ ტარგეტ IP მისამართი: " TARGET_IP
+    
+    if [[ ! $TARGET_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}[!] არასწორი IP მისამართი${NC}"
+        return 1
+    fi
+    
+    # ping ტესტი
+    echo -e "${YELLOW}[+] ჰოსტის ხელმისაწვდომობის შემოწმება...${NC}"
+    if ! ping -c 1 -W 3 "$TARGET_IP" &> /dev/null; then
+        echo -e "${RED}[!] ჰოსტი არ პასუხობს ping-ს${NC}"
+        read -p "გნებავთ სკანირების გაგრძელება? (y/n): " continue_scan
+        if [[ $continue_scan != "y" ]]; then
+            return 1
+        fi
+    else
+        echo -e "${GREEN}[✓] ჰოსტი ხელმისაწვდომია${NC}"
+    fi
+    
+    echo -e "${YELLOW}[+] პორტების სკანირება ($TARGET_IP)...${NC}"
+    
+    # TOP 1000 პორტების სკანირება
+    nmap -T4 -A -v "$TARGET_IP" | grep -E "PORT|open|closed|filtered" | while read line; do
+        if [[ $line == *"open"* ]]; then
+            echo -e "${GREEN}[✓] $line${NC}"
+        elif [[ $line == *"closed"* ]]; then
+            echo -e "${RED}[✗] $line${NC}"
+        elif [[ $line == *"filtered"* ]]; then
+            echo -e "${YELLOW}[?] $line${NC}"
+        fi
+    done
+}
+
+# სისუსტეების სკანირება
+vulnerability_scan() {
+    echo -e "\n${BLUE}=== სისუსტეების სკანირება ===${NC}"
+    
+    read -p "შეიყვანეთ ტარგეტ IP მისამართი: " TARGET_IP
+    
+    if [[ ! $TARGET_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}[!] არასწორი IP მისამართი${NC}"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}[+] სისუსტეების სკანირება ($TARGET_IP)...${NC}"
+    echo -e "${YELLOW}[!] ეს შეიძლება რამდენიმე წუთი დასჭირდეს...${NC}"
+    
+    # nmap vulnerability scripts
+    nmap --script vuln -sV "$TARGET_IP" | grep -E "VULNERABLE|CVE|ssl-|http-" | while read line; do
+        if [[ $line == *"VULNERABLE"* ]]; then
+            echo -e "${RED}[!] $line${NC}"
+        elif [[ $line == *"CVE"* ]]; then
+            echo -e "${YELLOW}[?] $line${NC}"
+        else
+            echo -e "${BLUE}[+] $line${NC}"
+        fi
+    done
+}
+
+# ოპერაციული სისტემის აღმოჩენა
+os_detection() {
+    echo -e "\n${BLUE}=== ოპერაციული სისტემის აღმოჩენა ===${NC}"
+    
+    read -p "შეიყვანეთ ტარგეტ IP მისამართი: " TARGET_IP
+    
+    if [[ ! $TARGET_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo -e "${RED}[!] არასწორი IP მისამართი${NC}"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}[+] ოპერაციული სისტემის აღმოჩენა ($TARGET_IP)...${NC}"
+    
+    # OS Detection with nmap
+    nmap -O -sV --version-intensity 5 "$TARGET_IP" | grep -E "Running|OS details|Device type|Service Info" | while read line; do
+        if [[ $line == *"Running"* ]] || [[ $line == *"OS details"* ]]; then
+            echo -e "${GREEN}[✓] $line${NC}"
+        elif [[ $line == *"Device type"* ]]; then
+            echo -e "${BLUE}[+] $line${NC}"
+        elif [[ $line == *"Service Info"* ]]; then
+            echo -e "${YELLOW}[+] $line${NC}"
+        fi
+    done
+    
+    # TTL-ის შემოწმება OS-ის განსაზღვრისთვის
+    echo -e "\n${YELLOW}[+] TTL ანალიზი...${NC}"
+    TTL=$(ping -c 1 "$TARGET_IP" 2>/dev/null | grep "ttl=" | sed 's/.*ttl=\([0-9]*\).*/\1/')
+    
+    if [ ! -z "$TTL" ]; then
+        if [ "$TTL" -ge 240 ] && [ "$TTL" -le 255 ]; then
+            echo -e "${GREEN}[✓] სავარაუდოდ Windows (TTL: $TTL)${NC}"
+        elif [ "$TTL" -ge 60 ] && [ "$TTL" -le 64 ]; then
+            echo -e "${GREEN}[✓] სავარაუდოდ Linux/Unix (TTL: $TTL)${NC}"
+        elif [ "$TTL" -ge 240 ] && [ "$TTL" -le 255 ]; then
+            echo -e "${GREEN}[✓] სავარაუდოდ Cisco/Network Device (TTL: $TTL)${NC}"
+        else
+            echo -e "${YELLOW}[?] უცნობი OS (TTL: $TTL)${NC}"
+        fi
+    fi
+}
+
+# მთავარი მენიუ
+main_menu() {
+    while true; do
+        echo -e "\n${BLUE}=== მთავარი მენიუ ===${NC}"
+        echo "1. ქსელის სკანირება"
+        echo "2. პორტების სკანირება"
+        echo "3. სისუსტეების სკანირება"
+        echo "4. ოპერაციული სისტემის აღმოჩენა"
+        echo "5. ყველა ფუნქციის შესრულება"
+        echo "6. გასვლა"
+        
+        read -p "აირჩიეთ ოფცია (1-6): " choice
+        
+        case $choice in
+            1) network_scan ;;
+            2) port_scan ;;
+            3) vulnerability_scan ;;
+            4) os_detection ;;
+            5) 
+                network_scan
+                echo -e "\n${YELLOW}[+] ავირჩიოთ ტარგეტი დეტალური სკანირებისთვის...${NC}"
+                port_scan
+                vulnerability_scan
+                os_detection
+                ;;
+            6) 
+                echo -e "${GREEN}[+] მშვიდობით!${NC}"
+                exit 0
+                ;;
+            *) 
+                echo -e "${RED}[!] არასწორი არჩევანი${NC}"
+                ;;
+        esac
+    done
+}
+
+# ეთიკური გაფრთხილება
+ethical_warning() {
+    echo -e "${RED}"
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║                          გაფრთხილება                            ║"
+    echo "║                                                                  ║"
+    echo "║  ეს სკრიპტი განკუთვნილია მხოლოდ ეთიკური ტესტირებისთვის!         ║"
+    echo "║  გამოიყენეთ მხოლოდ:                                              ║"
+    echo "║  • თქვენი საკუთარი ქსელისთვის                                    ║"
+    echo "║  • მფლობელის ნებართვით                                          ║"
+    echo "║  • სატესტო გარემოში                                             ║"
+    echo "║                                                                  ║"
+    echo "║  უნებართვო გამოყენება კანონის დარღვევაა!                        ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo -e "${NC}\n"
+    
+    read -p "ვადასტურებ, რომ გამოვიყენებ ეთიკურად (y/n): " consent
+    if [[ $consent != "y" ]]; then
+        echo -e "${RED}[!] სკრიპტი შეწყდა${NC}"
+        exit 1
+    fi
+}
+
+# მთავარი ფუნქცია
+main() {
+    show_banner
+    ethical_warning
+    check_dependencies
+    main_menu
+}
+
+# სკრიპტის გაშვება
+main "$@"
